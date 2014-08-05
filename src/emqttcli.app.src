@@ -1,0 +1,16 @@
+{application, emqttcli,
+ [
+  {description, ""},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {modules, [
+  	    emqttcli_socket,
+	    emqttcli_socket_tcp
+  ]},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { emqttcli_app, []}},
+  {env, []}
+ ]}.
