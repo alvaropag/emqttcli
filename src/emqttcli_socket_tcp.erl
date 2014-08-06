@@ -19,12 +19,21 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-export([spec/2, set_emqttcli_connection_pid/2, activate_socket/1]).
+
 -define(SERVER, ?MODULE).
 
--record(state, {emqttcli_socket, emqttcli_connection}).
+-record(state, {emqttcli_socket, emqttcli_connection = undefined}).
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+spec(ClientId, EmqttcliSocket) when is_binary(ClientId) ->
+    {list_to_atom(binary:bin_to_list(ClientId)), {emqttcli_socket_tcp, start_link, [EmqttcliSocket]},
+     permanent,
+     5000,
+     worker,
+     [emqttcli_socket_tcp]}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -33,8 +42,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link([PidConnMgr, EmqttcliSocket]) ->
-    gen_server:start_link(?MODULE, [PidConnMgr, EmqttcliSocket], []).
+start_link([EmqttcliSocket]) ->
+    gen_server:start_link(?MODULE, [EmqttcliSocket], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -51,8 +60,8 @@ start_link([PidConnMgr, EmqttcliSocket]) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([PidConnMgr, EmqttcliSocket]) ->
-    {ok, #state{emqttcli_connection = PidConnMgr, emqttcli_socket = EmqttcliSocket}}.
+init([EmqttcliSocket]) ->
+    {ok, #state{emqttcli_socket = EmqttcliSocket}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -82,6 +91,13 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_cast({emqttcli_connection, EmqttcliConnPID}, State) ->
+    {noreply, State#state{emqttcli_connection = EmqttcliConnPID}};
+
+handle_cast(activate_socket, #state{emqttcli_connection = EmqttcliConnPid} = State) when EmqttcliConnPid == undefined ->
+    {stop, "No emqttcli_connection defined", State};
+
 handle_cast(activate_socket, #state{emqttcli_socket = EmqttcliSocket} = State) ->
     TcpSocket = EmqttcliSocket#emqttcli_socket.connection,
     inet:setopts(TcpSocket, [{active, once}]),
@@ -146,6 +162,13 @@ terminate(_Reason, _State) ->
 %%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+set_emqttcli_connection_pid(SocketPid, EmqttcliConnectionPid) ->
+    gen_server:cast(SocketPid, {emqttcli_connection, EmqttcliConnectionPid}).
+
+activate_socket(SocketPid) ->
+    gen_server:cast(SocketPid, activate_socket).
 
 %%%===================================================================
 %%% Internal functions
