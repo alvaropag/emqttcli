@@ -38,10 +38,10 @@ create_socket(ssh, CM, ChannelId, ChannelPid) ->
     #emqttcli_socket{type = ssh, connection = CM, channel = ChannelId, ssh_channel_pid = ChannelPid}.
 
 send_data_to_conn(ConnectionMgr, Data, EmqttcliSocket) ->
-    ok. %%gen_fsm:send_event(ConnectionMgr, {data, Data, EmqttcliSocket})
+    emqttcli_connection:recv_data(ConnectionMgr, Data, EmqttcliSocket).
 
 send_closed_to_conn(ConnectionMgr, EmqttcliSocket) ->
-    ok. %%gen_fsm:send_all_state_event(ConnectionMgr, {closed, EmqttcliSocket}).
+    emqttcli_connection:recv_closed(ConnectionMgr, EmqttcliSocket).
 
 send_error_to_conn(ConnectionMgr, Reason, EmqttcliSocket) ->
-    ok. %%gen_fsm:send_all_state_event(ConnectionMgr, {error, Reason, EmqttcliSocket}).
+    emqttcli_connection:recv_error(ConnectionMgr, Reason, EmqttcliSocket).

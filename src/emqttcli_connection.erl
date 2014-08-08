@@ -17,6 +17,11 @@
 -export([init/1, state_name/2, state_name/3, handle_event/3,
          handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
 
+
+%% API
+-export([recv_data/3, recv_error/3, recv_closed/2]).
+
+
 -define(SERVER, ?MODULE).
 
 -record(state, {client_id, cb_mod}).
@@ -62,7 +67,7 @@ spec(ClientId, CallbackModule) when is_binary(ClientId) ->
 %% @end
 %%--------------------------------------------------------------------
 init([ClientId, CallbackModule]) ->
-    {ok, state_name, #state{client_id = ClientId, cb_mod = CallbackModule}}.
+    {ok, ready, #state{client_id = ClientId, cb_mod = CallbackModule}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -79,6 +84,22 @@ init([ClientId, CallbackModule]) ->
 %%                   {stop, Reason, NewState}
 %% @end
 %%--------------------------------------------------------------------
+
+recv_data(Pid, Data, Socket) ->
+    gen_fsm:send_event(Pid, {data, Data, Socket}).
+
+recv_error(Pid, Reason, Socket) ->
+    gen_fsm:send_all_state_event(Pid, {error, Reason, Socket}).
+
+recv_closed(Pid, Socket) ->
+    gen_fsm:send_all_state_event(Pid, {closed, Socket}).
+
+
+ready({data, Data, Socket}, State) ->
+    %DO Stuff here!!
+    {next_state, ready, State}.
+
+
 state_name(_Event, State) ->
     {next_state, state_name, State}.
 
@@ -185,3 +206,18 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+disconnected() ->
+    ok.
+
+connected() ->
+    ok.
+
+error() ->
+    ok.
+
+timeout() ->
+    ok.
+
+recv_data() ->
+    ok.
