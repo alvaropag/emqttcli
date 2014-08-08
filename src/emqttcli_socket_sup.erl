@@ -14,7 +14,7 @@
 -export([start_link/0]).
 
 %% Supervisor callbacks
--export([init/1]).
+-export([init/1, start_child/1]).
 
 -define(SERVER, ?MODULE).
 
@@ -64,6 +64,10 @@ init([]) ->
     %          Restart, Shutdown, Type, ['AModule']},
 
     {ok, {SupFlags, []}}.
+
+
+start_child(Spec) ->
+    supervisor:start_child(emqttcli_socket_sup, Spec).
 
 %%%===================================================================
 %%% Internal functions

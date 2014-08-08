@@ -4,11 +4,16 @@
   {vsn, "0.0.1"},
   {registered, []},
   {modules, [
+  	    emqttcli_app,
+	    emqttcli_sup,
+  	    emqttcli,
+	    emqttcli_socket_sup,
   	    emqttcli_socket,
 	    emqttcli_socket_tcp,
+	    emqttcli_socket_ssh,
+	    emqttcli_socket_ssh_subsystem,
 	    emqttcli_connection_sup,
-	    emqttcli_connection,
-	    emqttcli
+	    emqttcli_connection
   ]},
   {applications, [
                   kernel,
