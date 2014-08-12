@@ -10,21 +10,22 @@
 
 -behaviour(gen_fsm).
 
+-include("emqttcli_frames.hrl").
+
 %% API
 -export([start_link/2, spec/2]).
 
 %% gen_fsm callbacks
--export([init/1, state_name/2, state_name/3, handle_event/3,
-         handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
+-export([init/1, handle_event/3, handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
 
 
 %% API
--export([recv_data/3, recv_error/3, recv_closed/2]).
+-export([recv_data/3, recv_error/3, recv_closed/2, recv_new_connection/2]).
 
 
 -define(SERVER, ?MODULE).
 
--record(state, {client_id, cb_mod}).
+-record(state, {client_id, cb_mod, buffer = <<>>, parse_fun}).
 
 %%%===================================================================
 %%% API
@@ -67,7 +68,7 @@ spec(ClientId, CallbackModule) when is_binary(ClientId) ->
 %% @end
 %%--------------------------------------------------------------------
 init([ClientId, CallbackModule]) ->
-    {ok, ready, #state{client_id = ClientId, cb_mod = CallbackModule}}.
+    {ok, connected, #state{client_id = ClientId, cb_mod = CallbackModule, parse_fun = fun emqttcli_framing:parse/1}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -85,23 +86,39 @@ init([ClientId, CallbackModule]) ->
 %% @end
 %%--------------------------------------------------------------------
 
-recv_data(Pid, Data, Socket) ->
-    gen_fsm:send_event(Pid, {data, Data, Socket}).
+recv_data(Pid, Data, EmqttcliSocket) ->
+    gen_fsm:send_event(Pid, {data, Data, EmqttcliSocket}).
 
-recv_error(Pid, Reason, Socket) ->
-    gen_fsm:send_all_state_event(Pid, {error, Reason, Socket}).
+recv_error(Pid, Reason, EmqttcliSocket) ->
+    gen_fsm:send__event(Pid, {error, Reason, EmqttcliSocket}).
 
-recv_closed(Pid, Socket) ->
-    gen_fsm:send_all_state_event(Pid, {closed, Socket}).
+recv_closed(Pid, EmqttcliSocket) ->
+    gen_fsm:send_event(Pid, {closed, EmqttcliSocket}).
 
-
-ready({data, Data, Socket}, State) ->
-    %DO Stuff here!!
-    {next_state, ready, State}.
+recv_new_connection(Pid, EmqttcliSocket) ->
+    gen_fsm:send_all_state_event(Pid, {new_conn, EmqttcliSocket}).
 
 
-state_name(_Event, State) ->
-    {next_state, state_name, State}.
+
+%%States
+connected({data, Data, EmqttcliSocket}, State) -> 
+    State1 = handle_data(Data, EmqttcliSocket, State),
+    {next_state, ready, State1};
+
+connected({error, _Reason, _EmqttcliSocket}, State) ->
+    {next_state, disconnected, State};
+
+connected({closed, _EmqttcliSocket}, State) ->
+    {next_state, disconnected, State};
+
+connected(_Event, State) ->
+    {stop, "Invalid event", State}.
+
+disconnected(_Event, State) ->
+    {stop, "Invalid event", State}.
+
+
+    
 
 %%--------------------------------------------------------------------
 %% @private
@@ -121,9 +138,9 @@ state_name(_Event, State) ->
 %%                   {stop, Reason, Reply, NewState}
 %% @end
 %%--------------------------------------------------------------------
-state_name(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, state_name, State}.
+%state_name(_Event, _From, State) ->
+%    Reply = ok,
+%    {reply, Reply, state_name, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -138,6 +155,9 @@ state_name(_Event, _From, State) ->
 %%                   {stop, Reason, NewState}
 %% @end
 %%--------------------------------------------------------------------
+handle_event({new_conn, _Socket}, _StateName, State) ->
+    {next_state, connected, State};
+
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
@@ -207,17 +227,46 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-disconnected() ->
-    ok.
+handle_data(Data, EmqttcliSocket, #state{buffer = Buffer, parse_fun = Process} = State) ->
+    AllData = <<Buffer/binary, Data/binary>>,
+    case Process(AllData) of
+        %%Interpreted a frame, has to do something...
+        {frame, MqttFrame, Rest} -> 
+            process_frame(MqttFrame, State), 
+            {next_state, connected, State#state{parse_fun = fun emqttcli_framing:parse/1, buffer = Rest}};
 
-connected() ->
-    ok.
+        %% I interpreted some of it, send me more data that I can continue...
+        {more, KeepFromHere} ->
+            {next_state, connected, State#state{parse_fun = KeepFromHere}};
 
-error() ->
-    ok.
+        %% Ops, something went wrong....
+        {error, Why} -> 
+            gen_fsm:send_event(self(), {error, Why}), 
+            {next_state, disconnected, State}
 
-timeout() ->
-    ok.
+    end.
 
-recv_data() ->
-    ok.
+%% How to propagate errors and messages?
+
+% Process Received Data
+process_frame(#connack{return_code = ReturnCode}, _State) ->
+    ReturnCode;
+
+%First response of #publish for QoS1
+%process_frame(#puback{message_id = MsgId}) ->
+
+%First response of #publish for QoS2
+%process_frame(#pubrec{message_id = MsgId}) ->
+
+%QoS 2, can be received by the client
+%process_frame(#pubrel{dup = Duplicated, message_id = MsgId}) ->
+
+%process_frame(#suback{message_id = MsgId, qoses = []}) ->
+
+process_frame(disconnect, _State) ->
+    ok;
+
+
+process_frame(_, _State) -> ok.
+
+    

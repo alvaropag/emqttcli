@@ -13,7 +13,8 @@
 	    emqttcli_socket_ssh,
 	    emqttcli_socket_ssh_subsystem,
 	    emqttcli_connection_sup,
-	    emqttcli_connection
+	    emqttcli_connection,
+	    emqttcli_framing
   ]},
   {applications, [
                   kernel,
