@@ -92,6 +92,11 @@ handle_call({open_conn_channel, Address, Port, Options}, _From, State) ->
             {reply, {error, Reason}, State, 5000}
     end;
 
+handle_call({sync_send, Data}, _From, #state{emqttcli_socket = #emqttcli_socket{type = tcp, connection = Conn}} = State) ->
+    io:fwrite("Sending data ~n", []),
+    Reply = gen_tcp:send(Conn, Data),
+    {reply, Reply, State};
+
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -118,6 +123,7 @@ handle_cast(activate_socket, #state{emqttcli_socket = EmqttcliSocket} = State) -
     inet:setopts(TcpSocket, [{active, once}]),
     {noreply, State};
     
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -136,18 +142,18 @@ handle_cast(_Msg, State) ->
 
 handle_info({tcp, Socket, Data}, #state{emqttcli_socket = EmqttcliSocket, emqttcli_connection = EmqttcliConnection} = State) ->
     Socket = EmqttcliSocket#emqttcli_socket.connection,
-    emqttcli_socket:forward_data_to_mgr(EmqttcliConnection, Data, EmqttcliSocket),
+    emqttcli_socket:send_data_to_conn(EmqttcliConnection, Data, EmqttcliSocket),
     inet:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, Socket}, #state{emqttcli_socket = EmqttcliSocket, emqttcli_connection = EmqttcliConnection} = State) ->
     Socket = EmqttcliSocket#emqttcli_socket.connection,
-    emqttcli_socket:forward_closed_to_mgr(EmqttcliConnection, EmqttcliSocket),
+    emqttcli_socket:send_closed_to_mgr(EmqttcliConnection, EmqttcliSocket),
     {stop, shutdown, State};
 
 handle_info({tcp_error, Socket, Reason}, #state{emqttcli_socket = EmqttcliSocket, emqttcli_connection = EmqttcliConnection} = State) ->
     Socket = EmqttcliSocket#emqttcli_socket.connection,
-    emqttcli_socket:foward_error_to_mgr(EmqttcliConnection, Reason, EmqttcliSocket),
+    emqttcli_socket:send_closed_to_mgr(EmqttcliConnection, Reason, EmqttcliSocket),
     {stop, {tcp_error, Reason}, State};
 
 handle_info(_Info, State) ->
@@ -196,7 +202,7 @@ activate_socket(SocketPid) ->
 open_conn_channel_internal(Address, Port, Options) ->
     case gen_tcp:connect(Address, Port, Options) of
         {ok, Socket} ->
-            {ok, emqttcli_socket:create_socket(tcp, Socket)};
+            {ok, emqttcli_socket:create_socket(tcp, Socket, self())};
          {error, Reason} ->
             {error, Reason}
     end.

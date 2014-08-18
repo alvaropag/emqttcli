@@ -1,1 +1,1 @@
--record(emqttcli, {emqttcli_id, emqttcli_socket}).
+-record(emqttcli, {emqttcli_id, emqttcli_connection, emqttcli_socket}).

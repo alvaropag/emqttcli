@@ -10,24 +10,31 @@
 
 -behaviour(gen_server).
 
+-include("emqttcli_socket.hrl").
+
 %% API
--export([start_link/1, spec/2, open_conn_channel/5]).
+-export([start_link/1, 
+         spec/1, 
+         open_conn_channel/5]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+
+-export([set_emqttcli_connection_pid/2]).
+
 -define(SERVER, ?MODULE).
 
--record(state, {client_id, conn_mgr, channel_id, emqttcli_cb_pid, emqttcli_socket}).
+-record(state, {client_id, conn_mgr, channel_id, emqttcli_cb_pid, emqttcli_socket, channel_pid}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-spec(ClientId, CallbackModule) when is_binary(ClientId) ->
+spec(ClientId) when is_binary(ClientId) ->
     {list_to_atom(binary:bin_to_list(ClientId)), 
-       {emqttcli_socket_ssh, start_link, [ClientId, CallbackModule]}, 
+       {emqttcli_socket_ssh, start_link, [ClientId]}, 
         permanent, 5000, worker, [emqttcli_socket_ssh]
     }.
 
@@ -75,10 +82,17 @@ init([ClientId]) ->
 %%--------------------------------------------------------------------
 handle_call({open_conn_channel, Address, Port, Options, ClientId}, _From, State) ->
     case open_conn_channel_internal(Address, Port, Options, ClientId) of
-        {ok, EmqttcliSocket} ->
-            {reply, {ok, EmqttcliSocket}, State#state{emqttcli_socket = EmqttcliSocket}, 5000};
+        {ok, EmqttcliSocket, ChannelPid} ->
+            {reply, {ok, EmqttcliSocket}, State#state{emqttcli_socket = EmqttcliSocket, channel_pid = ChannelPid}, 5000};
         {error, Reason} -> {error, Reason}
     end;
+
+
+handle_call({sync_send, Data}, _From, #state{emqttcli_socket = #emqttcli_socket{type = ssh, connection = Conn, channel = Channel}} = State) ->
+    io:fwrite("Sending SSH data to channel ~p~n", [Channel]),
+    Return = ssh_connection:send(Conn, Channel, Data, 5000),
+    io:fwrite("Reply of sending SSH data ~p~n", [Return]),
+    {reply, Return, State};
     
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -94,6 +108,10 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast({emqttcli_connection_pid, EmqttcliConnection}, #state{channel_pid = ChannelPid } = State) ->
+    ssh_channel:cast(ChannelPid, {emqttcli_connection_pid, EmqttcliConnection}),
+    {noreply, State};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -141,6 +159,10 @@ open_conn_channel(Pid, Address, Port, Options, ClientId) ->
     gen_server:call(Pid, {open_conn_channel, Address, Port, Options, ClientId}).
 
 
+set_emqttcli_connection_pid(Pid, EmqttcliConnectionPid) ->
+    gen_server:cast(Pid, {emqttcli_connection_pid, EmqttcliConnectionPid}).
+
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
@@ -160,7 +182,7 @@ open_conn_channel_internal(Address, Port, Options, ClientId) ->
                 [ClientId]),
 
             %%Return the socket
-            {ok, emqttcli_socket:create_socket(ssh, CM, ChannelId, ChannelPid)};
+            {ok, emqttcli_socket:create_socket(ssh, CM, ChannelId, self()), ChannelPid};
             
         {error, Reason} -> {error, Reason}
     end.

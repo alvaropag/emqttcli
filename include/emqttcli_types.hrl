@@ -27,6 +27,7 @@
 -ifndef(emqttcli_types_hrl).
 -define(emqttcli_types_hrl, true).
 
+
 -define(CONNECT, 1).
 -define(CONNACK, 2).
 -define(PUBLISH, 3).
@@ -41,6 +42,18 @@
 -define(PINGREQ, 12).
 -define(PINGRESP, 13).
 -define(DISCONNECT, 14).
+
+
+-export_type([mqtt_frame/0, 
+              message_type/0, 
+              error/0, 
+              qos_level/0,
+              return_code/0, 
+              topic/0, 
+              payload/0, 
+              client_id/0, 
+              message_id/0]).
+
 
 -include("emqttcli_frames.hrl").
 
