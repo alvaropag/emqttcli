@@ -178,8 +178,13 @@ open_conn_channel_internal(Address, Port, Options, ClientId) ->
 
             %Manually starts the channel that will handle the subsystem on the client
             %%TODO: understand the trap_exit(true) and handle the DOWN message
-            {ok, ChannelPid} = ssh_channel:start_link(CM, ChannelId, emqttcli_socket_ssh_subsystem, 
-                [ClientId]),
+            %{ok, ChannelPid} = ssh_channel:start_link(CM, ChannelId, emqttcli_socket_ssh_subsystem, 
+            %   [ClientId]),
+
+            {ok, ChannelPid} = emqttcli_socket_ssh_subsystem_sup:start_link(emqttcli_socket_ssh_subsystem_sup:spec(CM, ChannelId, ClientId)),
+ 
+            io:fwrite("ChannelPid of SSH Subsystem = ~p~n", [ChannelPid]),
+
 
             %%Return the socket
             {ok, emqttcli_socket:create_socket(ssh, CM, ChannelId, self()), ChannelPid};

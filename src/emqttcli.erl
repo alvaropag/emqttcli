@@ -110,7 +110,7 @@ connect(#emqttcli{emqttcli_id = ClientId, emqttcli_connection = EmqttcliConnecti
         password = Password, 
         client_id = ClientId, 
         keep_alive = KeepAlive},
-    gen_fsm:sync_send_event(EmqttcliConnection, {try_connect, Connect}, 15000).
+    gen_fsm:sync_send_event(EmqttcliConnection, {try_connect, Connect}, 60000).
 
 
 %Disconnects the client
@@ -121,7 +121,8 @@ disconnect(#emqttcli{emqttcli_socket = EmqttcliSocket, emqttcli_connection = Emq
 
 
 
-subscribe(_EmqttcliRec, [_Paths], _QoS) ->
+subscribe(#emqttcli{emqttcli_connection = EmqttcliConnection}, Paths, QoS) ->
+    gen_fsm:sync_send_event(EmqttcliConnection, {subscribe, Paths, QoS}),
     ok.
 
 unsubscribe(_EmqttcliRec, [_Paths]) ->

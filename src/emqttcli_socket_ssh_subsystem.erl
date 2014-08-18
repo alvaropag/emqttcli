@@ -3,7 +3,8 @@
 %% Implement the ssh_daemon_channel 
 -behaviour(ssh_daemon_channel).
 
--export([init/1, 
+-export([start_link/3,
+         init/1, 
          handle_ssh_msg/2, 
          handle_msg/2, 
          terminate/2, 
@@ -18,6 +19,8 @@
                 emqttcli_socket}).
 
 
+start_link(CM, ChannelId, ClientId) ->
+    ssh_channel:start(CM, ChannelId, ?MODULE, [ClientId]).
     
 init([ClientId]) ->
     State = #state{client_id = ClientId},

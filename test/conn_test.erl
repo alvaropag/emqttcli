@@ -12,13 +12,13 @@ start_tcp() ->
 start_ssh() ->
     ssh:start(),
     emqttcli:start(),
-    Conn = emqttcli:open_network_channel(ssh, <<"alvaro">>, "192.168.56.101", 1884,
+    Conn = emqttcli:open_network_channel(ssh, <<"alvaro">>, "127.0.0.1", 1884,
     [
       {user_dir, "/home/alvaro/devel/testes/erl-ssh-subsystem-test/client_key"},
       {silently_accept_hosts, true},
       {user_interaction, false},
       {user, "alvaro"},
-      {nodelay, true}
-      
+      {nodelay, true},
+      {rsa_pass_phrase, "17102412pag"}      
     ]),
     emqttcli:connect(Conn, <<>>, <<>>).

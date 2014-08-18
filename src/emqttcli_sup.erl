@@ -25,6 +25,7 @@ start_link() ->
 init([]) ->
     {ok, { {one_for_one, 5, 10}, [ 
         ?CHILD(emqttcli_connection_sup, supervisor),
-        ?CHILD(emqttcli_socket_sup, supervisor)
+        ?CHILD(emqttcli_socket_sup, supervisor),
+        ?CHILD(emqttcli_socket_ssh_subsystem_sup, supervisor)
     ]} }.
 
