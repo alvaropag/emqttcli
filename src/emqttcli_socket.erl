@@ -20,7 +20,7 @@ sync_send(#emqttcli_socket{type = ssh, socket_pid = SocketPid}, Data) -> %when i
 % Worst error message EVER!
 sync_send(Socket, Data) ->
     IsBinary = is_binary(Data),
-    io:fwrite("emqttcli_socket:sync_send(~p, ~s) is_binary = ~p~n", [Socket, Data, IsBinary]),
+    lager:debug("emqttcli_socket:sync_send(~p, ~s) is_binary = ~p~n", [Socket, Data, IsBinary]),
     {error, "General error"}.
 
 

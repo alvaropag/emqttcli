@@ -11,7 +11,6 @@
   	    emqttcli_socket,
 	    emqttcli_socket_tcp,
 	    emqttcli_socket_ssh,
-	    emqttcli_socket_ssh_subsystem_sup,
 	    emqttcli_socket_ssh_subsystem,
 	    emqttcli_connection_sup,
 	    emqttcli_connection,
@@ -20,6 +19,7 @@
   {applications, [
                   kernel,
                   stdlib,
+		  lager,
 		  crypto,
 		  ssh
                  ]},

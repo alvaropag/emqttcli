@@ -10,8 +10,9 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    emqttcli_sup:start_link(),
-    register(emqtt, self()).
+    {ok, Pid} = emqttcli_sup:start_link(),
+    register(emqttcli, self()),
+    {ok, Pid}.
 
 stop(_State) ->
     ok.

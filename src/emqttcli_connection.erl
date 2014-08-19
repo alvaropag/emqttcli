@@ -11,6 +11,7 @@
 -behaviour(gen_fsm).
 
 -include("emqttcli_frames.hrl").
+-include("emqttcli_connection.hrl").
 
 %% API
 -export([start_link/1, spec/1]).
@@ -34,18 +35,24 @@
          loading/3,
          connecting/2,
          connected/2,
+         connected/3,
          disconnected/2,
          setSocket/2
          ]).
 
 -define(SERVER, ?MODULE).
 
+-define(TIMEOUT, 5000).
+
 -record(state, {client_id, 
                 emqttcli_socket = undefined, 
                 cb_pid = undefined, 
                 buffer = <<>>, 
                 parse_fun,
-                pending_reply = []}).
+                next_id = 1,
+                pending_reply = undefined,
+                timer = #timer{}
+               }).
 
 %%%===================================================================
 %%% API
@@ -128,36 +135,40 @@ setSocket(Pid, EmqttcliSocket) ->
 
 %%States
 
-loading({try_connect, ConnFrame}, From, #state{emqttcli_socket = Socket} = State) ->
-    State1 = State#state{pending_reply = [From]},
-    case emqttcli_socket:sync_send(Socket, emqttcli_framing:serialise(ConnFrame)) of
-        ok -> {next_state, connecting, State1};
-        {error, Reason} -> 
-            io:fwrite("Error sending data with reason ~p~n", [Reason]),
-            {next_state, error, State1}
-    end.
 
-
-connecting({conn_ack, ok}, #state{pending_reply = [To]} = State) ->
+connecting({conn_ack, ok}, #state{pending_reply = To} = State) ->
     gen_fsm:reply(To, ok),
-    {next_state, connected, State#state{pending_reply = []}};
+    State1 = schedule_keep_alive_timer(State),
+    {next_state, connected, State1#state{pending_reply = undefined}};
 
-connecting({conn_ack, {error, Reason}}, #state{pending_reply = [To]} = State) ->
+connecting({conn_ack, {error, Reason}}, #state{pending_reply = To} = State) ->
     gen_fsm:reply(To, {error, Reason}),
-    {next_state, error, State#state{pending_reply = []}}.
+    {next_state, error, State#state{pending_reply = undefined}}.
 
 
-    
+
+% The keep alive timer just timed out...
+connected({timeout, _Ref, {ka_timer, timedout}}, #state{timer = Timer} = State) ->
+    lager:debug("Received timeout event while in state connected {ka_timer, timedout}"),
+    Timer1 = Timer#timer{timer_ref = undefined},
+    {next_state, timeout, State#state{timer = Timer1}};
+
+% Send a pingreq to the broker...
+connected({timeout, _Ref, {ka_timer, next_keep_alive}},  State) ->
+    lager:debug("Received timeout event while in state connected {ka_timer, next_keep_alive}"),
+    State1 = fire_keep_alive_timer(State),
+    {next_state, connected, State1};
+
+% Receiving data from the Socket...    
 connected({data, Data, EmqttcliSocket}, State) -> 
     State1 = handle_data(Data, EmqttcliSocket, State),
-    {next_state, ready, State1};
+    {next_state, connected, State1};
 
 connected({error, _Reason, _EmqttcliSocket}, State) ->
     {next_state, error, State};
 
 connected({closed, _EmqttcliSocket}, State) ->
     {next_state, disconnected, State};
-
 
 connected(_Event, State) ->
     {stop, "Invalid event", State}.
@@ -189,6 +200,31 @@ disconnected(_Event, State) ->
 %state_name(_Event, _From, State) ->
 %    Reply = ok,
 %    {reply, Reply, state_name, State}.
+
+loading({try_connect, #connect{keep_alive = KeepAlive} = ConnFrame}, From, #state{emqttcli_socket = EmqttcliSocket} = State) -> 
+    %convert the keep_alive from seconds to miliseconds
+    lager:debug("Received the KeepAlive = ~p", [KeepAlive]),
+    Timer = #timer{keep_alive = KeepAlive * 1000},
+    State1 = State#state{pending_reply = From, timer = Timer},
+    case send_to_broker(EmqttcliSocket, ConnFrame) of
+        ok -> 
+            {next_state, connecting, State1};
+        {error, _Reason} -> 
+            {next_state, error, State1}
+    end.
+
+
+
+connected({subscribe, Subscriptions}, From, #state{emqttcli_socket = EmqttcliSocket} = State) ->
+    Sub = #subscribe{dup = false, subscriptions = 
+              [#subscription{topic = T, qos = Q} || {T, Q} <- Subscriptions]},
+    
+    case send_to_broker(EmqttcliSocket, Sub, From, State) of
+        ok -> 
+            {next_state, connected, State};
+        {error, _Reason} ->
+            {next_state, error, State}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -237,13 +273,14 @@ handle_event({unreg_recv_msg_cb, _CBPid}, StateName, State) ->
     {next_state, StateName, State#state{cb_pid = undefined}};
 
 handle_event({emqttcli_socket, EmqttcliSocket}, StateName, State) ->
-    io:fwrite("Received socket ~p~n", [EmqttcliSocket]),
+    lager:debug("Received socket ~p", [lager:pr(EmqttcliSocket, ?MODULE)]),
     {next_state, StateName, State#state{emqttcli_socket = EmqttcliSocket}};
 
 
 handle_event(disconnect, _StateName, #state{emqttcli_socket = EmqttcliSocket} = State) ->
-    emqttcli_socket:sync_send(EmqttcliSocket, emqttcli_framing:serialise(disconnect)),
-    {next_state, disconnected, State};
+    send_to_broker(EmqttcliSocket, disconnect),
+    State1 = stop_keep_alive_timer(State),
+    {next_state, disconnected, State1};
 
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
@@ -319,8 +356,8 @@ handle_data(Data, _EmqttcliSocket, #state{buffer = Buffer, parse_fun = Process} 
     case Process(AllData) of
         %%Interpreted a frame, has to do something...
         {frame, MqttFrame, Rest} -> 
-            process_frame(MqttFrame, State), 
-            {ok, State#state{parse_fun = fun emqttcli_framing:parse/1, buffer = Rest}};
+            State1 = process_frame(MqttFrame, State), 
+            {ok, State1#state{parse_fun = fun emqttcli_framing:parse/1, buffer = Rest}};
 
         %% I interpreted some of it, send me more data that I can continue...
         {more, KeepFromHere} ->
@@ -335,12 +372,14 @@ handle_data(Data, _EmqttcliSocket, #state{buffer = Buffer, parse_fun = Process} 
 %% How to propagate errors and messages?
 
 % Process Received Data
-process_frame(#connack{return_code = ok}, _State) ->
-    io:fwrite("Mqtt Connection accepted~n"),
-    gen_fsm:send_event(self(), {conn_ack, ok});
+process_frame(#connack{return_code = ok}, State) ->
+    lager:debug("Mqtt Connection accepted"),
+    gen_fsm:send_event(self(), {conn_ack, ok}),
+    State;
 
-process_frame(#connack{return_code = ReturnCode}, _State) ->
-    gen_fsm:send_event(self(), {conn_ack, {error, ReturnCode}});
+process_frame(#connack{return_code = ReturnCode}, State) ->
+    gen_fsm:send_event(self(), {conn_ack, {error, ReturnCode}}),
+    State;
 
 %First response of #publish for QoS1
 %process_frame(#puback{message_id = MsgId}) ->
@@ -353,10 +392,81 @@ process_frame(#connack{return_code = ReturnCode}, _State) ->
 
 %process_frame(#suback{message_id = MsgId, qoses = []}) ->
 
-process_frame(disconnect, _State) ->
-    ok;
+process_frame(disconnect, State) ->
+    State;
 
 
-process_frame(_, _State) -> ok.
+process_frame(pingresp, State) ->
+    lager:debug("Receiving pingresp from broker"),
+    State1 = schedule_keep_alive_timer(State),
+    State1;
 
+process_frame(_, State) -> State.
+
+
+% Dont't have a message Id but uses a record
+send_to_broker(EmqttcliSocket, Packet) when is_record(Packet, connect); is_record(Packet, connack)->
+   case  emqttcli_socket:sync_send(EmqttcliSocket, emqttcli_framing:serialise(Packet)) of
+       ok -> ok;
+
+       {error, Reason} ->
+           lager:error("Error sending data with reason ~p", [Reason]),
+           {error, Reason}
+   end;
+
+% Don't have a message Id and it's just an atom
+send_to_broker(EmqttcliSocket, Packet) when (Packet == disconnect); (Packet == pingreq);  (Packet == pingresp) ->
+    case emqttcli_socket:sync_send(EmqttcliSocket, emqttcli_framing:serialise(Packet)) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            lager:error("Error sending data with reason ~p", [Reason]),
+            {error, Reason}
+    end.
+
+
+send_to_broker(EmqttcliSocket, Packet, State, AnswerTo) ->
+    send_to_broker(EmqttcliSocket, Packet, State, AnswerTo, ?TIMEOUT).
     
+% Have a message Id and must be retried if failed
+send_to_broker(EmqttcliSocket, Packet, #state{next_id = Id} = State, AnswerTo, Timeout) ->
+    
+    % Add the packet to a control structure using the Id as the key
+    % Increment the message_id
+    % Send to the network
+    % Return the State
+    
+
+    {ok, State#state{next_id = Id + 1}}.
+
+
+
+
+fire_keep_alive_timer(#state{emqttcli_socket = EmqttcliSocket, timer = Timer} = State) ->
+    KeepAlive = Timer#timer.keep_alive,
+    Timeout = KeepAlive + trunc(KeepAlive / 2),
+    send_to_broker(EmqttcliSocket, pingreq),
+    lager:debug("Sending pingreq to broker"),
+    TRef = gen_fsm:start_timer(Timeout, {ka_timer, timedout}),
+    Timer1 = Timer#timer{timer_ref = TRef},
+    State#state{timer = Timer1}.
+
+stop_keep_alive_timer(#state{timer = Timer} = State) when Timer#timer.timer_ref /= undefined->
+    TRef = Timer#timer.timer_ref,
+    gen_fsm:cancel_timer(TRef),
+    State#state{timer = Timer#timer{timer_ref = undefined}};
+
+stop_keep_alive_timer(State) ->
+    State.
+
+
+schedule_keep_alive_timer( State) ->
+    State1 = stop_keep_alive_timer(State),
+    Timer = State1#state.timer,
+    KeepAlive = Timer#timer.keep_alive,
+    %If you are 80% of the keep alive timer without sending anything, then send a keep alive msg
+    NextPingReq = trunc(KeepAlive * 0.8),
+    TRef = gen_fsm:start_timer(NextPingReq, {ka_timer, next_keep_alive}),
+    lager:debug("Scheduling next_keep_alive_timer ~p with time ~p", [TRef, NextPingReq]),
+    Timer1 = Timer#timer{timer_ref = TRef},
+    State1#state{timer = Timer1}.

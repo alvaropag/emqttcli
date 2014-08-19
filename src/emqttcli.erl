@@ -15,7 +15,7 @@
          connect/5,
          connect/6,
          disconnect/1, 
-         subscribe/3,
+         subscribe/2,
          unsubscribe/2,
          publish/4,
          recv_msg/1,
@@ -24,7 +24,10 @@
 
 
 start() ->
-    emqttcli_sup:start_link().
+    application:start(sals),
+    lager:start(),
+    ssh:start(),
+    application:start(emqttcli).
 
 open_network_channel(Type, ClientId, Address, Port, Options) ->
    open_network_channel(Type, ClientId, Address, Port, Options, undefined).
@@ -45,7 +48,7 @@ open_network_channel(tcp, ClientId, Address, Port, Options, CBPid) ->
 
             % I know it's not elegant, but I need the Socket and the Connection to know
             % about each other...
-            io:fwrite("Sending Socket ~p to Connection ~p~n", [EmqttcliSocket, EmqttcliConnection]),
+            lager:debug("Sending Socket ~p to Connection ~p~n", [EmqttcliSocket, EmqttcliConnection]),
             emqttcli_connection:setSocket(EmqttcliConnection, EmqttcliSocket),
     
             %set the PID of the emqttcli_connection gen_fsm in the emqttcli_socket_tcp 
@@ -97,12 +100,12 @@ connect(EmqttcliRec, UserName, Password) ->
     connect(EmqttcliRec, UserName, Password, true).
 
 connect(EmqttcliRec, UserName, Password, CleanSession) ->
-    connect(EmqttcliRec, UserName, Password, CleanSession, undefined).
+    connect(EmqttcliRec, UserName, Password, CleanSession, 60).
 
-connect(EmqttcliRec, UserName, Password, CleanSession, Will) ->
-    connect(EmqttcliRec, UserName, Password, CleanSession, Will, 60).
+connect(EmqttcliRec, UserName, Password, CleanSession, KeepAlive) ->
+    connect(EmqttcliRec, UserName, Password, CleanSession, KeepAlive, undefined).
 
-connect(#emqttcli{emqttcli_id = ClientId, emqttcli_connection = EmqttcliConnection}, UserName, Password, CleanSession, Will, KeepAlive) ->
+connect(#emqttcli{emqttcli_id = ClientId, emqttcli_connection = EmqttcliConnection}, UserName, Password, CleanSession, KeepAlive, Will) ->
     Connect = #connect{
         clean_session = CleanSession, 
         will = Will, 
@@ -116,14 +119,13 @@ connect(#emqttcli{emqttcli_id = ClientId, emqttcli_connection = EmqttcliConnecti
 %Disconnects the client
 disconnect(#emqttcli{emqttcli_socket = EmqttcliSocket, emqttcli_connection = EmqttcliConnection}) ->
     gen_fsm:send_all_state_event(EmqttcliConnection, disconnect),
+    timer:sleep(5000),
     emqttcli_socket:close(EmqttcliSocket),
     ok.
 
+subscribe(#emqttcli{emqttcli_connection = EmqttcliConnection}, Subscriptions) ->
+    gen_fsm:sync_send_event(EmqttcliConnection, {subscribe, Subscriptions}).
 
-
-subscribe(#emqttcli{emqttcli_connection = EmqttcliConnection}, Paths, QoS) ->
-    gen_fsm:sync_send_event(EmqttcliConnection, {subscribe, Paths, QoS}),
-    ok.
 
 unsubscribe(_EmqttcliRec, [_Paths]) ->
     ok.

@@ -89,9 +89,9 @@ handle_call({open_conn_channel, Address, Port, Options, ClientId}, _From, State)
 
 
 handle_call({sync_send, Data}, _From, #state{emqttcli_socket = #emqttcli_socket{type = ssh, connection = Conn, channel = Channel}} = State) ->
-    io:fwrite("Sending SSH data to channel ~p~n", [Channel]),
+    lager:debug("Sending SSH data to channel ~p~n", [Channel]),
     Return = ssh_connection:send(Conn, Channel, Data, 5000),
-    io:fwrite("Reply of sending SSH data ~p~n", [Return]),
+    lager:debug("Reply of sending SSH data ~p~n", [Return]),
     {reply, Return, State};
     
 handle_call(_Request, _From, State) ->
@@ -167,28 +167,12 @@ set_emqttcli_connection_pid(Pid, EmqttcliConnectionPid) ->
 %%% Internal functions
 %%%===================================================================
 open_conn_channel_internal(Address, Port, Options, ClientId) ->
-    %Connect to the SSH server
-    case ssh:connect(Address, Port, Options, 5000) of
-        {ok, CM} ->
-            %Start the channel to communicate
-            {ok, ChannelId} = ssh_connection:session_channel(CM, 5000),
-
-            %Inform the server that you want to use a subsystem
-            success = ssh_connection:subsystem(CM, ChannelId, "z_ssh_subsystem@zotonic.com", 5000),
-
-            %Manually starts the channel that will handle the subsystem on the client
-            %%TODO: understand the trap_exit(true) and handle the DOWN message
-            %{ok, ChannelPid} = ssh_channel:start_link(CM, ChannelId, emqttcli_socket_ssh_subsystem, 
-            %   [ClientId]),
-
-            {ok, ChannelPid} = emqttcli_socket_ssh_subsystem_sup:start_link(emqttcli_socket_ssh_subsystem_sup:spec(CM, ChannelId, ClientId)),
- 
-            io:fwrite("ChannelPid of SSH Subsystem = ~p~n", [ChannelPid]),
-
-
-            %%Return the socket
+    % TODO: put a monitor on the ChannelPid
+    case emqttcli_socket_ssh_subsystem:start_channel(Address, Port, Options, ClientId) of
+        {ok, CM, ChannelId, ChannelPid} ->
+            %% Return the socket
             {ok, emqttcli_socket:create_socket(ssh, CM, ChannelId, self()), ChannelPid};
             
         {error, Reason} -> {error, Reason}
-    end.
             
+    end.

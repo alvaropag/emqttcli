@@ -3,7 +3,7 @@
 %% Implement the ssh_daemon_channel 
 -behaviour(ssh_daemon_channel).
 
--export([start_link/3,
+-export([start_channel/4,
          init/1, 
          handle_ssh_msg/2, 
          handle_msg/2, 
@@ -18,12 +18,36 @@
                 emqttcli_connection_pid, 
                 emqttcli_socket}).
 
+-define(PACKET_SIZE, 32768).
+-define(WINDOW_SIZE, 4*?PACKET_SIZE).
 
-start_link(CM, ChannelId, ClientId) ->
-    ssh_channel:start(CM, ChannelId, ?MODULE, [ClientId]).
-    
-init([ClientId]) ->
-    State = #state{client_id = ClientId},
+
+start_channel(Address, Port, Options, ClientId) ->
+   %Connect to the SSH server
+    case ssh:connect(Address, Port, Options, 5000) of
+        {ok, CM} ->
+            %Start the channel to communicate
+            {ok, ChannelId} = ssh_connection:session_channel(CM, ?WINDOW_SIZE, ?PACKET_SIZE, 5000),
+
+            %Manually starts the channel that will handle the subsystem on the client
+            %%TODO: understand the trap_exit(true) and handle the DOWN message
+            %{ok, ChannelPid} = ssh_channel:start_link(CM, ChannelId, emqttcli_socket_ssh_subsystem, 
+            %   [ClientId]),
+
+            {ok, ChannelPid} = ssh_channel:start(CM, ChannelId, ?MODULE, [CM, ChannelId, ClientId]),
+ 
+            lager:debug("ChannelPid of SSH Subsystem = ~p~n", [ChannelPid]),
+
+            {ok, CM, ChannelId, ChannelPid}
+
+
+    end.
+
+
+init([CM, ChannelId, ClientId]) ->
+    %Inform the server that you want to use a subsystem
+    success = ssh_connection:subsystem(CM, ChannelId, "z_ssh_subsystem@zotonic.com", 5000),
+    State = #state{client_id = ClientId, conn_mgr = CM, channel_id = ChannelId},
     {ok, State}.
   
 
@@ -78,11 +102,11 @@ handle_call(_Msg, _From, State) ->
     {noreply, State}.
 
 handle_cast({emqttcli_connection_pid, EmqttcliConnection}, State) ->
-    io:fwrite("SSH Subsystem received emqttcli_connection_pid~n"),
+    lager:debug("SSH Subsystem received emqttcli_connection_pid~n"),
     {noreply, State#state{emqttcli_connection_pid = EmqttcliConnection}};
 
 handle_cast(Msg, State) ->
-    io:fwrite("Received cast with Msg=~p, State=~p~n", [Msg, State]),
+    lager:debug("Received cast with Msg=~p, State=~p~n", [Msg, State]),
     {noreply, State}.
 
 

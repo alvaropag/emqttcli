@@ -4,13 +4,18 @@
 
 start_tcp() ->
         emqttcli:start(),
-	Conn = emqttcli:open_network_channel(tcp, <<"alvaro">>, {127,0,0,1}, 1883, [binary]),
-	emqttcli:connect(Conn, <<>>, <<>>),
-	emqttcli:disconnect(Conn).
+	Conn = emqttcli:open_network_channel(tcp, <<"alvaro">>, "127.0.0.1", 1883, 
+	[
+	  binary, 
+	  {packet, raw},
+	  {active, false}, 
+	  {nodelay, true}, 
+	  {keepalive, true}
+	]),
+	emqttcli:connect(Conn, <<>>, <<>>, true, 60).
 
 	
 start_ssh() ->
-    ssh:start(),
     emqttcli:start(),
     Conn = emqttcli:open_network_channel(ssh, <<"alvaro">>, "127.0.0.1", 1884,
     [
@@ -18,7 +23,6 @@ start_ssh() ->
       {silently_accept_hosts, true},
       {user_interaction, false},
       {user, "alvaro"},
-      {nodelay, true},
-      {rsa_pass_phrase, "17102412pag"}      
+      {nodelay, true}  
     ]),
-    emqttcli:connect(Conn, <<>>, <<>>).
+    emqttcli:connect(Conn, <<>>, <<>>, true, 60).

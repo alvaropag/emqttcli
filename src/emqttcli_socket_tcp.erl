@@ -93,7 +93,7 @@ handle_call({open_conn_channel, Address, Port, Options}, _From, State) ->
     end;
 
 handle_call({sync_send, Data}, _From, #state{emqttcli_socket = #emqttcli_socket{type = tcp, connection = Conn}} = State) ->
-    io:fwrite("Sending data ~n", []),
+    lager:debug("Sending data ~n", []),
     Reply = gen_tcp:send(Conn, Data),
     {reply, Reply, State};
 

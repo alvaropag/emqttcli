@@ -1,0 +1,1 @@
+-record(timer, {timer_ref, keep_alive}).
