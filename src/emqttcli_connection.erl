@@ -10,8 +10,10 @@
 
 -behaviour(gen_fsm).
 
+-include("emqttcli.hrl").
 -include("emqttcli_frames.hrl").
 -include("emqttcli_connection.hrl").
+-include_lib("stdlib/include/ms_transform.hrl").
 
 %% API
 -export([start_link/1, spec/1]).
@@ -51,7 +53,9 @@
                 parse_fun,
                 next_id = 1,
                 pending_reply = undefined,
-                timer = #timer{}
+                timer = #timer{},
+                msgs_pending,
+                msgs_received
                }).
 
 %%%===================================================================
@@ -95,7 +99,8 @@ spec(ClientId) when is_binary(ClientId) ->
 %% @end
 %%--------------------------------------------------------------------
 init([ClientId]) ->
-    {ok, loading, #state{client_id = ClientId, parse_fun = fun emqttcli_framing:parse/1}}.
+    {ok, loading, #state{client_id = ClientId, parse_fun = fun emqttcli_framing:parse/1,
+       msgs_pending = gb_trees:empty(), msgs_received = queue:new() }}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -206,7 +211,7 @@ loading({try_connect, #connect{keep_alive = KeepAlive} = ConnFrame}, From, #stat
     lager:debug("Received the KeepAlive = ~p", [KeepAlive]),
     Timer = #timer{keep_alive = KeepAlive * 1000},
     State1 = State#state{pending_reply = From, timer = Timer},
-    case send_to_broker(EmqttcliSocket, ConnFrame) of
+    case sync_send_to_broker(EmqttcliSocket, ConnFrame) of
         ok -> 
             {next_state, connecting, State1};
         {error, _Reason} -> 
@@ -215,17 +220,80 @@ loading({try_connect, #connect{keep_alive = KeepAlive} = ConnFrame}, From, #stat
 
 
 
-connected({subscribe, Subscriptions}, From, #state{emqttcli_socket = EmqttcliSocket} = State) ->
-    Sub = #subscribe{dup = false, subscriptions = 
-              [#subscription{topic = T, qos = Q} || {T, Q} <- Subscriptions]},
-    
-    case send_to_broker(EmqttcliSocket, Sub, From, State) of
-        ok -> 
-            {next_state, connected, State};
-        {error, _Reason} ->
-            {next_state, error, State}
-    end.
+connected({subscribe, Subscriptions}, From, #state{emqttcli_socket = EmqttcliSocket, next_id = Id} = State) ->
+    Sub = #subscribe{
+        dup = false, 
+        subscriptions = [#subscription{topic = T, qos = Q} || {T, Q} <- Subscriptions],
+        message_id = Id},
 
+    Id1 = get_next_msg_id(Id),
+
+    NewMsgsTree = record_send_message(Id, From, Sub, State#state.msgs_pending),
+
+    State1 = State#state{next_id = Id1, msgs_pending = NewMsgsTree},
+
+    % Send to broker, but keeps track of the msg
+    case sync_send_to_broker(EmqttcliSocket, Sub) of
+        ok -> 
+            {next_state, connected, State1};
+        {error, _Reason} ->
+            {next_state, error, State1}
+    end;
+
+
+connected({unsubscribe, Topics}, From, #state{emqttcli_socket = EmqttcliSocket, next_id = Id} = State) ->
+    UnSub = #unsubscribe{
+               message_id = Id,
+               topics = Topics},
+
+    Id1 = get_next_msg_id(Id),
+
+    NewMsgsTree = record_send_message(Id, From, UnSub, State#state.msgs_pending),
+
+    State1 = State#state{next_id = Id1, msgs_pending = NewMsgsTree},
+
+    case sync_send_to_broker(EmqttcliSocket, UnSub) of
+        ok ->
+            {next_state, connected, State1};
+        {error, _Reason} ->
+            {next_state, error, State1}
+    end;
+
+%Publish for QoS 0
+connected({publish, #publish{qos = QoS} = Pub}, _From, #state{emqttcli_socket = EmqttcliSocket} = State) when QoS == 'at_most_once'->
+    % Don't need to record anything, just send to the broker and return for the user...
+    case sync_send_to_broker(EmqttcliSocket, Pub) of
+        ok ->
+            {reply, ok, connected, State};
+        {error, Reason} ->
+            {reply, {error, Reason}, error, State}
+    end;
+
+%Publish for QoS 1 and 2, need to follow the protocol and wait for confirmation
+connected({publish, Pub}, From, #state{emqttcli_socket = EmqttcliSocket, next_id = Id} = State) ->
+    Pub1 = Pub#publish.qos#qos{message_id = Id},
+
+    NewMsgsTree = record_send_message(Id, Pub, From, State#state.msgs_pending),
+
+    Id1 = get_next_msg_id(Id),
+
+    State1 = State#state{next_id = Id1, msgs_pending = NewMsgsTree},
+    
+    case sync_send_to_broker(EmqttcliSocket, Pub1) of
+        ok ->
+            {next_state, connected, State1};
+        {error, _Reason} ->
+            {next_state, error, State1}
+    end;
+
+connected({get_msgs}, _From, #state{msgs_received = MsgsReceived} = State) ->
+    ListMsgsReceived = queue:to_list(MsgsReceived),
+    {reply, {ok, ListMsgsReceived}, connected, State#state{msgs_received = queue:new()}}.
+
+
+    
+
+    
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -278,7 +346,7 @@ handle_event({emqttcli_socket, EmqttcliSocket}, StateName, State) ->
 
 
 handle_event(disconnect, _StateName, #state{emqttcli_socket = EmqttcliSocket} = State) ->
-    send_to_broker(EmqttcliSocket, disconnect),
+    sync_send_to_broker(EmqttcliSocket, disconnect),
     State1 = stop_keep_alive_timer(State),
     {next_state, disconnected, State1};
 
@@ -381,71 +449,144 @@ process_frame(#connack{return_code = ReturnCode}, State) ->
     gen_fsm:send_event(self(), {conn_ack, {error, ReturnCode}}),
     State;
 
-%First response of #publish for QoS1
-%process_frame(#puback{message_id = MsgId}) ->
-
-%First response of #publish for QoS2
-%process_frame(#pubrec{message_id = MsgId}) ->
-
-%QoS 2, can be received by the client
-%process_frame(#pubrel{dup = Duplicated, message_id = MsgId}) ->
-
-%process_frame(#suback{message_id = MsgId, qoses = []}) ->
-
 process_frame(disconnect, State) ->
+    gen_fsm:send_event(self(), disconnect),
     State;
 
 
 process_frame(pingresp, State) ->
-    lager:debug("Receiving pingresp from broker"),
+    lager:debug("Received pingresp from broker"),
     State1 = schedule_keep_alive_timer(State),
     State1;
 
-process_frame(_, State) -> State.
+
+process_frame(#suback{message_id = Id, qoses = AcceptedQoSes}, #state{msgs_pending = MsgsTree} = State) ->
+    lager:debug("Received suback with Id = ~p", [Id]),
+    case gb_trees:lookup(Id, MsgsTree) of
+        {value, MsgRec} ->
+            ReplyTo = MsgRec#msg_mgmt.reply_to,
+            gen_fsm:reply(ReplyTo, {ok, AcceptedQoSes}),
+            NewMsgsTree = gb_trees:delete_any(Id, MsgsTree),
+            State#state{msgs_pending = NewMsgsTree};
+
+        %TODO Maybe crash!?
+        none -> State
+    end;
+
+process_frame(#unsuback{message_id = Id}, #state{msgs_pending = MsgsTree} = State) ->
+    lager:debug("Received unsuback with Id = ~p", [Id]),
+    case gb_trees:lookup(Id, MsgsTree) of
+        {value, MsgRec} ->
+            ReplyTo = MsgRec#msg_mgmt.reply_to,
+            gen_fsm:reply(ReplyTo, ok),
+            NewMsgsTree = gb_trees:delete_any(Id, MsgsTree),
+            State#state{msgs_pending = NewMsgsTree};
+
+        %TODO Maybe crash!?
+        none -> State
+    end;
+
+% Received a msg from the server to publish to the client...
+% If there is no cb_pid configured to relay the messages then store in the queue and the user
+% has to call emqttcli:recv_msg/1
+process_frame(#publish{dup = Dup, retain = Retain, qos = QoS, topic = Topic, payload = Payload}, #state{msgs_received = MsgsRcvd, emqttcli_socket = EmqttcliSocket, cb_pid = CBPid} = State) when CBPid == undefined ->
+    EmqttcliMsg = #emqttcli_msg{topic = Topic, qos_level = QoS, retained = Retain, dup = Dup, payload = Payload},
+    NewMsgsRcvd = queue:in(EmqttcliMsg, MsgsRcvd),
+    handle_received_publish_qos(EmqttcliSocket, QoS),
+    State#state{msgs_received = NewMsgsRcvd};
+
+% If there is a CBPid configured, then just relay the message...
+process_frame(#publish{dup = Dup, retain = Retain, qos = QoS, topic = Topic, payload = Payload}, #state{emqttcli_socket = EmqttcliSocket, cb_pid = CBPid} = State)  ->
+    EmqttcliMsg = #emqttcli_msg{topic = Topic, qos_level = QoS, retained = Retain, dup = Dup, payload = Payload},
+    handle_received_publish_qos(EmqttcliSocket, QoS),
+    CBPid ! {new_msg, EmqttcliMsg},
+    State;
 
 
-% Dont't have a message Id but uses a record
-send_to_broker(EmqttcliSocket, Packet) when is_record(Packet, connect); is_record(Packet, connack)->
+process_frame(#puback{message_id = Id}, #state{msgs_pending = MsgsTree} = State) ->
+    lager:debug("Received puback with Id = ~p", [Id]),
+    case gb_trees:lookup(Id, MsgsTree) of
+        {value, MsgRec} ->
+            ReplyTo = MsgRec#msg_mgmt.reply_to,
+            gen_fsm:reply(ReplyTo, ok),
+            NewMsgsTree = gb_trees:delete_any(Id, MsgsTree),
+            State#state{msgs_pending = NewMsgsTree};
+        none -> State
+    end;
+
+process_frame(#pubrec{message_id = Id}, #state{emqttcli_socket = EmqttcliSocket, msgs_pending = MsgsTree} = State) ->
+    lager:debug("Received pubrec with Id = ~p", [Id]),
+    case gb_trees:lookup(Id, MsgsTree) of
+        {value, MsgRec} ->
+            % Create a pubrel message and sends to the broker, will wait for the pubcomp to finish
+            % the procedure
+            PubRel = #pubrel{dup = MsgRec#msg_mgmt.msg#publish.dup, message_id = Id},
+            sync_send_to_broker(EmqttcliSocket, PubRel),
+            State;
+
+        none ->
+            % I guess I should crash here, since there is no recording of this Id...
+            %TODO
+            State
+    end;
+
+process_frame(#pubcomp{message_id = Id}, #state{msgs_pending = MsgsTree} = State) ->
+    lager:debug("Received pubcomp with Id = ~p", [Id]),
+    case gb_trees:lookup(Id, MsgsTree) of
+        {value, MsgRec} ->
+            ReplyTo = MsgRec#msg_mgmt.reply_to,
+            gen_fsm:reply(ReplyTo, ok),
+            NewMsgsTree = gb_trees:delete_any(Id),
+            State#state{msgs_pending = NewMsgsTree};
+
+        %TODO maybe crash here too
+        none -> State
+    end;
+
+            
+process_frame(Msg, State) -> 
+    lager:warning("Received unknown message ~p", [lager:pr(Msg, ?MODULE)]),
+    State.
+
+
+sync_send_to_broker(EmqttcliSocket, Packet) ->
    case  emqttcli_socket:sync_send(EmqttcliSocket, emqttcli_framing:serialise(Packet)) of
        ok -> ok;
 
        {error, Reason} ->
            lager:error("Error sending data with reason ~p", [Reason]),
            {error, Reason}
-   end;
-
-% Don't have a message Id and it's just an atom
-send_to_broker(EmqttcliSocket, Packet) when (Packet == disconnect); (Packet == pingreq);  (Packet == pingresp) ->
-    case emqttcli_socket:sync_send(EmqttcliSocket, emqttcli_framing:serialise(Packet)) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            lager:error("Error sending data with reason ~p", [Reason]),
-            {error, Reason}
-    end.
-
-
-send_to_broker(EmqttcliSocket, Packet, State, AnswerTo) ->
-    send_to_broker(EmqttcliSocket, Packet, State, AnswerTo, ?TIMEOUT).
-    
-% Have a message Id and must be retried if failed
-send_to_broker(EmqttcliSocket, Packet, #state{next_id = Id} = State, AnswerTo, Timeout) ->
-    
-    % Add the packet to a control structure using the Id as the key
-    % Increment the message_id
-    % Send to the network
-    % Return the State
+   end.
     
 
-    {ok, State#state{next_id = Id + 1}}.
+get_next_msg_id(16#ffff) ->
+    1;
+
+get_next_msg_id(Id) ->
+    Id + 1.
+
+record_send_message(Id, From, Msg, MsgsTree) ->
+    MsgRec = #msg_mgmt{msg_id = Id, reply_to = From, msg = Msg},
+    gb_trees:insert(Id, MsgRec, MsgsTree).
 
 
+handle_received_publish_qos(EmqttcliSocket, #qos{level = Level, message_id = Id}) ->
+    ReplyMsg = 
+        case Level of
+            'at_least_once' -> #puback{message_id = Id};
+            'exactly_once'  -> #pubrec{message_id = Id}
+        end,
+    sync_send_to_broker(EmqttcliSocket, ReplyMsg);
+
+handle_received_publish_qos(_, _) ->
+    ok.
 
 
+%Timer pingreq/pingresp functions
 fire_keep_alive_timer(#state{emqttcli_socket = EmqttcliSocket, timer = Timer} = State) ->
     KeepAlive = Timer#timer.keep_alive,
     Timeout = KeepAlive + trunc(KeepAlive / 2),
-    send_to_broker(EmqttcliSocket, pingreq),
+    sync_send_to_broker(EmqttcliSocket, pingreq),
     lager:debug("Sending pingreq to broker"),
     TRef = gen_fsm:start_timer(Timeout, {ka_timer, timedout}),
     Timer1 = Timer#timer{timer_ref = TRef},
@@ -470,3 +611,6 @@ schedule_keep_alive_timer( State) ->
     lager:debug("Scheduling next_keep_alive_timer ~p with time ~p", [TRef, NextPingReq]),
     Timer1 = Timer#timer{timer_ref = TRef},
     State1#state{timer = Timer1}.
+
+
+

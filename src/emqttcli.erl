@@ -18,6 +18,7 @@
          subscribe/2,
          unsubscribe/2,
          publish/4,
+         publish/5,
          recv_msg/1,
          register_recv_msg_cb/2, 
          unregister_recv_msg_cb/2]).
@@ -127,14 +128,35 @@ subscribe(#emqttcli{emqttcli_connection = EmqttcliConnection}, Subscriptions) ->
     gen_fsm:sync_send_event(EmqttcliConnection, {subscribe, Subscriptions}).
 
 
-unsubscribe(_EmqttcliRec, [_Paths]) ->
-    ok.
+unsubscribe(#emqttcli{emqttcli_connection = EmqttcliConnection}, Subscriptions) ->
+    gen_fsm:sync_send_event(EmqttcliConnection, {unsubscribe, Subscriptions}).
 
-publish(_EmqttcliRec, _Path, _Msg, _QoS) ->
-    ok.
+% Publish with QoS 0
+publish(#emqttcli{emqttcli_connection = EmqttcliConnection}, Topic, Msg, Retain) ->
+    Pub = #publish{
+       qos = 'at_most_once',
+       retain = Retain,
+       topic = Topic,
+       payload = Msg
+    },
+    gen_fsm:sync_send_event(EmqttcliConnection, {publish, Pub}).
 
-recv_msg(_EmqttcliRec) ->
-    ok.
+% Publish with QoS 1 or 2
+publish(EmqttcliRec, Topic, Msg, Retain, QoS) when is_atom(QoS) ->
+    publish(EmqttcliRec, Topic, Msg, Retain, #qos{level = QoS});
+
+publish(#emqttcli{emqttcli_connection = EmqttcliConnection}, Topic, Msg, Retain, QoS) ->
+    Pub = #publish{
+       qos = QoS,
+       retain = Retain,
+       topic = Topic,
+       payload = Msg
+    },
+    gen_fsm:sync_send_event(EmqttcliConnection, {publish, Pub}).
+    
+
+recv_msg(#emqttcli{emqttcli_connection = EmqttcliConnection}) ->
+    gen_fsm:sync_send_event(EmqttcliConnection, {get_msgs}).
 
 
 %Async

@@ -3,16 +3,24 @@
 -export([start_tcp/0, start_ssh/0]).
 
 start_tcp() ->
-        emqttcli:start(),
-	Conn = emqttcli:open_network_channel(tcp, <<"alvaro">>, "127.0.0.1", 1883, 
-	[
-	  binary, 
-	  {packet, raw},
-	  {active, false}, 
-	  {nodelay, true}, 
-	  {keepalive, true}
-	]),
-	emqttcli:connect(Conn, <<>>, <<>>, true, 60).
+    emqttcli:start(),
+    Conn = emqttcli:open_network_channel(tcp, <<"alvaro">>, "127.0.0.1", 1883, 
+    [
+	binary, 
+	{packet, raw},
+	{active, false}, 
+	{nodelay, true}, 
+	{keepalive, true}
+    ]),
+    emqttcli:connect(Conn, <<>>, <<>>, true, 60),
+    emqttcli:subscribe(Conn, [{<<"/teste">>, 'at_most_once'}]),
+    emqttcli:publish(Conn, <<"/teste">>, <<"Hello World!">>, false),
+    %Wait for 30 sec to receive some messages...
+    %I'm cheating here, but it's just for tests...
+    timer:sleep(30000),
+    ItemsReceived = emqttcli:recv_msg(Conn),
+    io:fwrite("Received ~p ~n", [ItemsReceived]),
+    emqttcli:disconnect(Conn).
 
 	
 start_ssh() ->
@@ -25,4 +33,13 @@ start_ssh() ->
       {user, "alvaro"},
       {nodelay, true}  
     ]),
-    emqttcli:connect(Conn, <<>>, <<>>, true, 60).
+    emqttcli:connect(Conn, <<>>, <<>>, true, 60),
+    emqttcli:subscribe(Conn, [{<<"/teste">>, 'at_most_once'}]),
+    emqttcli:publish(Conn, <<"/teste">>, <<"Hello World!">>, false),
+    %Wait for 30 sec to receive some messages...
+    %I'm cheating here, but it's just for tests...
+    timer:sleep(30000),
+    ItemsReceived = emqttcli:recv_msg(Conn),
+    io:fwrite("Received ~p ~n", [ItemsReceived]),
+    emqttcli:disconnect(Conn).
+  
