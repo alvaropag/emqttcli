@@ -270,10 +270,12 @@ connected({publish, #publish{qos = QoS} = Pub}, _From, #state{emqttcli_socket = 
     end;
 
 %Publish for QoS 1 and 2, need to follow the protocol and wait for confirmation
-connected({publish, Pub}, From, #state{emqttcli_socket = EmqttcliSocket, next_id = Id} = State) ->
-    Pub1 = Pub#publish.qos#qos{message_id = Id},
+connected({publish, #publish{qos = QoS} = Pub}, From, #state{emqttcli_socket = EmqttcliSocket, next_id = Id} = State) ->
+    Pub1 = Pub#publish{qos = QoS#qos{message_id = Id}},
 
-    NewMsgsTree = record_send_message(Id, Pub, From, State#state.msgs_pending),
+    lager:debug("Sending publish record ~p", [lager:pr(Pub1, ?MODULE)]),
+
+    NewMsgsTree = record_send_message(Id, From, Pub, State#state.msgs_pending),
 
     Id1 = get_next_msg_id(Id),
 
